@@ -1,0 +1,236 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{listings}
+\usepackage{pgfplots}
+
+\title{Sorting in Assembly x86 64}
+\author{Mathias Bovtrup(mabov13) Philip Jos Rosenlund Andersen(phand18)}
+\date{4th of November 2022}
+
+\begin{document}
+
+\maketitle
+
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+This project is about sorting numbers using assembly x86-64. Sorting numbers is a key topic in computer science and used in many other fields to present data. There are many ways to sort numbers and different algorithms performance is often linked with the way the input data looks. Is it almost sorted or how big are the values compared to the amount of input. We will be sorting using the insertionSort algorithm, because it is easier to implement compared to other more complex sorting algorithms, here in our first meeting with assembly. Assembly is a low level programming language and therefore very different to work with in comparison with high level languages. One only has access to a few registers to store values and pointers to memory in, but these are the same registers the cpu uses, so you can optimize the program, if you know how to work around the limits and think a bit outside the box, compared to when you program in high level language and the compilers tries to optimize things for you. So this project is also about learning and showing how to work with assembly and giving an understanding on how memory management and calculations is done by the cpu. The numbers we will be working with are actually coordinates represented by an x and an y value both ranging from 0 to 32767. It can be thought of as the x value representing some other data connected to the y value, which is maybe an index or some data we are interested in getting sorted. In our testing duplicates will be possible, which means they are not useful for indexing, but think of them as something we would be interested in sorting by.
+
+\section{Design choices}
+As mentioned we have chosen to sort numbers with the insertionSort algorithm. This has the advantage that it is inplace and somewhat simple to implement and easy to understand how it works. We considered implementing radixSort, because the values in our coordinates were limited to 32767 and radixSort needs a limit on the values, it is to sort and it is a very effective sorting algorithm, but we wanted to make sure our project could also handle different types of input and due to deadlines, we are not capable of implementing both.
+
+Our program will be able to read an input file consisting of ascii characters, which it then will save in memory, so it can convert it to numeric values, which it can easier compare, stored another place in memory. Each number will be represented by 8 bytes in memory, but the values we are working with could be represented using 2 bytes, so there is a possibility to improve the amount of space used. But on the other hand we would be capable of handling larger input values if that was ever needed and therefore we chose to let our converter take up more space since insertionSort does not scale well compared to many other algorithms so it would be preferred that input size is not too large and instead the numeric values can be larger.
+
+InsertionSort starts from the beginning of the input and then sorts it way through it all. It does so by comparing the two numbers it is currently looking at starting from the 1st and 2nd entry, if the 2nd number is smaller than the 1st, it swaps them around. If it has swapped two numbers around it then repeats itself now comparing the lower of the two with the next in line. When the 2nd number is larger than the 1st things are in order and it can jump to the index it has kept track of where all numbers before the index are sorted and the rest is about to be.
+
+So when we are to implement this in assembly, we will need a swapping function and keeping track of where we are in memory using an index and which numbers we are currently comparing. Since we as mentioned represent each number using 8 bytes we will be using movq to move the numbers around since it moves 64 bits or exactly 8 bytes. We will need two counters for the two numbers are comparing which will be decreased, when we swap and increased to the index, when the numbers are in the correct places.
+
+When everything are sorted we will need a print function, which can convert the numbers back to ascii and print the sorted output either to a file or the terminal. Here we will take advantage of the fact that you can divide a given number by 10 to get least significant digit as a rest which will be stored in $\%rdx$ so we can take it and add 48 to get the ascii character for that number. This will be repeated until there is a 0 in $\%rax$ which means we have been through all the digits and we can add a space character and after every 2nd number we will add a newline character meaning we will be getting nice pairs of numbers printed on line after line with a space inbetween. Our print function will print each number one at a time using a syscall, which is not optimal since system calls are slow will affect the running time of the program. Instead we could have translated each number to ascii and saved them a new place in memory and when everything are converted we could print it all with one syscall. But since our numbers already take up a lot of space in memory we chose to print them one by one taking a little extra time, but saving space.
+
+\section{Implementation}
+After having agreed on what sorting algorithm to implement we started working on it, but before we could start coding the insertionSort we needed to figure out how to read from a file and save it in memory. We also needed to convert to numbers and being able to print those numbers to see if we had actually sorted something. Luckily we had some tools avaliable that could help us with just that. But to get an understanding on how we attacked the problems lets take a look into our code.
+
+\begin{lstlisting}[language=asm]
+_start:
+	movq 16(%rsp), %r15	
+	call openFile
+	call fileSize
+	call allocateForInputFile
+	call readFile
+	call convertToNumbers
+	call insertionSort
+	movq $0, %r8	
+	movq $0, %r9		
+	call printNumLoop
+	call closeFile
+	call exit
+\end{lstlisting}
+As you can see we decided to make functions for the steps, we needed to go through to get a better overview of how the program were supposed to run and for easier testing. 
+
+First thing we do is to take the argument from the stack which the program is started with. This argument is supposed to be a file containing the coordinates to sort. Then we can open the file and get the filesize. The filesize we then use to allocate space in memory for the input file, so we can read it into memory. When this is done we can then convert the ascii characters to numbers which our insertionSort need to be able to compare and sort them. After we have sorted we now need to return the sorted pairs of numbers and this is taken care of by the printNumLoop function, which translates the numbers back to ascii and prints them on screen or to a file. Then we are done and we can close the file and exit the program.
+
+This was a speed run through the program now lets dive deeper into some of the functions and take a look at what they actually do and look like. The first few are pretty simple and straightforward and what they do is kinda explained in the name of the function. So lets jump straight to the insertionSort call and check out what goes on here.
+
+\begin{lstlisting}[language=asm]
+insertionSort:
+	movq $0, %r15		#Counter for 1st number
+	movq $2, %r14		#Counter for 2nd number
+	movq %r12, %rax
+	movq $0, %rdx
+	movq $8, %rcx
+	cqto
+	idivq %rcx
+	movq %rax, %r12	        #Number of coordinates
+	movq $2, %r13		#Index
+	jmp sorter
+\end{lstlisting}
+
+When insertionSort gets called it sets up the counters, which it will use to calculate, where to  go in memory and to keep track of what numbers to compare. Then we need to know how many numbers there are and this is saved in r12. When we convert to numbers we count how many lines there are in the file and multiply by 16 to be able to allocate enough space, so this we can reuse, but we now need to divide by 8 to get how many numbers both x and y there are in the file. We then start the index at 2, because the 1st index is automatically sorted. This index we will increment by 2 each time we have sorted a new number, to jump past the x values. Now we are ready to jump to the sorter function.
+
+\begin{lstlisting}[language=asm]
+sorter:
+	cmp %r12, %r14			#Compares 2nd number index with 
+                                        #total numbers
+	jg insertionExit		#If index greater than we are done
+	movq 8(%r11, %r15, 8), %rdi	#Takes the 1st number Y
+	movq 8(%r11, %r14, 8), %rsi	#2nd Y
+	movq (%r11, %r15, 8), %rdx	#X of 1st
+	movq (%r11, %r14, 8), %rcx	#X of 2nd
+	cmp %rdi, %rsi			#Compare numbers
+	jge movePointersUp		#Everything is in order
+	jmp swap			#Otherwise we need to swap
+\end{lstlisting}
+
+This functions job is to check that we have not yet reached the end of the file and are done and also to move the numbers from memory to registers, so we can compare them. It compares the two y values and if they are equal or the 2nd is larger then it means that they are sorted correctly and it can go to the movePointsUp function, which will increase the index and set the 1st counter to index subtracted by two and the 2nd counter to the index. Because then we can compare a new number with an already sorted one and find its place. On the other hand if the 2nd number is less than the 1st, the two pairs needs to be exchange places. This is done by the swap function, which is now being called. So lets move on to that. The pushing and popping of registers has been removed, but they are there in the actual program and is the reason why we can use the registers as we do.
+
+\begin{lstlisting}[language=asm]
+swap:
+	imulq $8, %r15 	    #1st number index
+	addq $8, %r15	    #Y coordinate
+	addq %r11, %r15	    #Adds the memory pointer
+	imulq $8, %r14	    #2nd number index
+	addq $8, %r14       #Y coordinate
+	addq %r11, %r14	    #Adds the memory pointer
+	movq %rdi, (%r14)   #Swapping Y 
+	movq %rsi, (%r15)
+	subq $8, %r15	    #X coordinate
+	subq $8, %r14	    #X coordinate
+	movq %rdx, (%r14)	#Swapping X
+	movq %rcx, (%r15)
+	jmp movePointersDown
+\end{lstlisting}
+
+The swap function has to, as the name implies, swap the two pair of numbers around in memory.
+
+First we calculate the places in memory, we need to write to. This is done by multiplying the counters by 8, because each number takes up 8 bytes in memory, and we need to jump past them. Then we add 8 to first get the y value and then add the memory pointer, pointing to the place in memory, where the numbers are stored. When we have calculated the addresses, we can move the values to them by using movq from the registers where they are stored to the addresses pointed to by the registers we just calculated the addresses in.
+
+When all numbers have been sorted we need a way to print them to the terminal or to a file. This is taken care of by the printNumLoop function.
+
+\begin{lstlisting}[language=asm]
+printNumLoop:
+	cmp %r8, %r12           #Checks if we are done
+	je printExit
+	movq (%r11, %r8), %rdi 	#Moves 8 bytes(next number) to rdi 
+	push %r8   
+	push %r11
+	call printNum           #Prints rdi
+	pop %r11
+	pop %r8
+	addq $8, %r8            #Increment counter of bytes
+	addq $1, %r9            #How many numbers we have printed
+	movq %r9, %rax
+	movq $0, %rdx
+	movq $2, %rcx
+	cqto
+	idivq %rcx
+	cmp $0, %rdx            #Checks if we need a newline
+	je printNewline         #Even number yes odd no
+	jmp printNumLoop
+\end{lstlisting}
+
+This function is probably the one with most room for improvement. It starts by checking if we have printed all the numbers. If not we move the next number to rdi and call another helper function printNum that takes the number and translate it to ascii and prints it followed by a space. This is done by dividing the number with 10 to get the least significant digit out in rdx and add 48 to it because 48 in ascii is 0 and the next 9 is the next 9 numbers. 
+
+When the printNum function returns a number has been printed and we can add to our counters and check if we need a newline. If so we call the printNewline function which just prints a newline and then jumps back to printNumLoops beginning. Otherwise we just jump back to the beginning of the loop and starts over.
+
+What could have been done instead was to first convert all the numbers to ascii and save in a buffer and then print the whole buffer at once. This would reduce the number of syscalls which are slow, and why it takes some time to print all the numbers to a file or terminal. 
+
+\section{Evaluation}
+The test environment we use to run our evaluations is a macOS laptop running linux through a docker container.
+As input to use for the algorithm in our evaluations, we generate a number of different test files, with pseudo randomly generated numbers. We generate test files of the following sizes:\newline
+- 10k pairs \newline
+- 50k pairs \newline
+- 100k pairs \newline
+- 500k pairs \newline
+- 1mil pairs. \newline
+\newline
+We use the time command in linux to time the execution.
+When the executions we time is while writing to the /dev/null, file, so we don't include time that would have been spent writing to the filesystem.
+We have chosen to do this because it would have introduced more noise into the data, as the filesystem comes with extra volatility depending on external conditions.
+
+In the following figure, we display the time of the algorithm running on the different input sizes, in terms of real, user, and sys times.
+Results from time benchmarking:
+\begin{center}
+\begin{tabular}{||c c c c ||} 
+ \hline
+ Input size (\# pairs) & real & user & sys\\ [0.5ex] 
+ \hline\hline
+ 10,000 & 0m0.165s & 0m0.145s & 0m0.020s  \\ 
+ \hline
+ 50,000 & 0m3.290s & 0m3.234s & 0m0.055s  \\
+ \hline
+ 100,000 & 0m13.867s & 0m13.749s & 0m0.116s \\
+ \hline
+ 500,000 & 6m0.857s & 	6m0.520s & 0m0.541s \\
+ \hline
+ 1,000,000 & 24m52.836s & 24m52.609s & 0m0.999s \\ [1ex] 
+ \hline
+\end{tabular}
+\end{center}
+The theoretical expected complexity of the insertion sort algorithm we use, is $n^2$.
+If we look at the ratio between the entries in the running times (both real and user), we can see that it is approximately the ratio of the input sizes squared, which is what we would expect. The difference between the real time and the user time is small, which is a good sign, because it indicates that our algorithm does not spend a lot of time blocked by other threads or waiting for certain events. We would probably observe a higher real time if we had run the tests while writing to a real file instead of dev/null, because that would introduce blocking while waiting for the write to finish.
+
+Following is a plot of the measured running times, with data size along x axis measured in 1000 pairs, and the user part of the running time along the y axis in seconds. \newline
+\begin{tikzpicture}
+\begin{axis}[
+xmin=0, xmax=1000,
+ymin=0, ymax=1500
+]
+
+\addplot[
+    color=blue,
+    mark=square,
+    ]
+    coordinates {
+    (10, 0.145)(50, 3.234)(100,13.749)(500,360.52)(1000,1492.609)
+    };
+\end{axis}
+\end{tikzpicture}
+%Here ends the 2D plot
+\hskip 5pt
+
+\subsection{MCIPS}
+We ran a version of our program where we added a counter that increases with every comparison in the algorithm (loop management not included). Following are the results measured in million comparisons per second (MCIPS):
+\begin{tikzpicture}
+\begin{axis}[
+xmin=0, xmax=1000,
+ymin=0, ymax=1500
+]
+\addplot[
+    color=blue,
+    mark=square,
+    ]
+    coordinates {
+    (10, 172)(50, 193)(100,182)(500,173)(1000,167)
+    };
+\end{axis}
+\end{tikzpicture}
+%Here ends the 2D plot
+\hskip 5pt
+
+\subsection{Overhead}
+To get an idea of the overhead, we measured the running time of our program with the sorting algorithm removed.
+
+Following are the time results for different test sizes:
+
+\begin{center}
+\begin{tabular}{||c c c c ||} 
+ \hline
+ Input size (\# pairs) & real & user & sys\\ [0.5ex] 
+ \hline\hline
+ 10,000 & 0m0,016s & 0m0,008s & 0m0,008s  \\
+ \hline
+ 100,000 & 0m0,115s & 0m0,045s & 0m0.07s \\
+ \hline
+ 1,000,000 & 0m1,079s & 0m0,045s & 0m0,657s \\ [1ex] 
+ \hline
+\end{tabular}
+\end{center}
+
+Doing this overhead experiment we find that there is a big ratio between the real time and the user time. This is what we would expect because most of the computations of our program should come from the algorithm.
+
+\section{Conclusion}
+We have seen that we through implementation of a sorting algorithm in assembly, can achieve a program that delivers a sorted version of a given input file of the specific format that we  concern us self with for this purpose. We used time measurements of our program to measure the performance, which in itself might be of interest to the users of the program, but was also something we used to verify the correctness of our algorithm, since it came out close to what would be expected of the algorithm we implemented.
+
+\end{document}
